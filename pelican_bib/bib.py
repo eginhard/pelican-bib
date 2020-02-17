@@ -57,32 +57,48 @@ def add_publications(generator):
     try:
         from pybtex.database.input.bibtex import Parser
         from pybtex.database.output.bibtex import Writer
+        from pybtex.database.output import BaseWriter
         from pybtex.database import BibliographyData, PybtexError
         from pybtex.backends import html
+        from pybtex.plugin import Plugin
         from pybtex.style.formatting import BaseStyle, plain
     except ImportError:
         logger.warn('`pelican_bib` failed to load dependency `pybtex`')
         return
 
-    plugin_path = generator.settings.get('PUBLICATIONS_PLUGIN_PATH', 'plugins')
-    import sys
-    sys.path.append(plugin_path)
+    def get_plugin(name: str, parent: Plugin, kwargs={}):
+        """Returns the specified custom pybtex plugin if available, else None.
 
-    style = plain.Style()
-    if generator.settings.get('PUBLICATIONS_CUSTOM_STYLE', False):
+        Args:
+          - name: Name of the plugin's class, must be defined in pybtex_plugins.
+          - parent: Pybtex class from which the custom plugin must inherit.
+          - kwargs: Optional further arguments to the custom class constructor.
+        """
+        plugin = None
         try:
-            from pybtex_plugins import PelicanStyle
-            if not isinstance(PelicanStyle, type) or not issubclass(PelicanStyle, BaseStyle):
+            plugin_path = generator.settings.get('PUBLICATIONS_PLUGIN_PATH', 'plugins')
+            import sys
+            sys.path.append(plugin_path)
+            import pybtex_plugins
+            plugin_cls = getattr(pybtex_plugins, name)
+            if (not isinstance(plugin_cls, type) or
+                not issubclass(plugin_cls, parent)):
                 raise TypeError()
-            kwargs = generator.settings.get('PUBLICATIONS_STYLE_ARGS', {})
-            style = PelicanStyle(**kwargs)
-        except ImportError as e:
-            logger.warn(str(e))
-            logger.warn('pybtex_plugins.PelicanStyle not found, using Pybtex plain style')
+            plugin = plugin_cls(**kwargs)
+        except ModuleNotFoundError:
+            logger.info('No pybtex_plugins module found, using default pybtex plugins.')
+        except AttributeError:
+            logger.info(f'Custom pybtex plugin {name} not specified, using default plugin.')
         except TypeError:
-            logger.warn('PelicanStyle must be a subclass of pybtex.style.formatting.BaseStyle')
+            logger.warn(f'{name} must be a subclass of {parent}.')
+        return plugin
 
+    # Pybtex plugins
+    style_kwargs = generator.settings.get('PUBLICATIONS_STYLE_ARGS', {})
+    style = get_plugin('PelicanStyle', BaseStyle, kwargs=style_kwargs) or plain.Style()
+    writer = get_plugin('PelicanBibtexWriter', BaseWriter) or Writer()
 
+    # Parse publications file
     refs_file = generator.settings['PUBLICATIONS_SRC']
     try:
         bibdata_all = Parser().parse_file(refs_file)
@@ -131,7 +147,7 @@ def add_publications(generator):
         #render the bibtex string for the entry
         bib_buf = StringIO()
         bibdata_this = BibliographyData(entries={key: entry})
-        Writer().write_stream(bibdata_this, bib_buf)
+        writer.write_stream(bibdata_this, bib_buf)
         text = formatted_entry.text.render(html_backend)
 
         entry_tuple = {'key': key,
